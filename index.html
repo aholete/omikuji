@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>おみくじアプリ</title>
+  <style>
+    :root{--bg:#fff8f0;--card:#ffffff;--accent:#ff6b6b;--muted:#666}
+    *{box-sizing:border-box}
+    body{font-family:"Hiragino Kaku Gothic ProN",Meiryo,Arial,Helvetica,sans-serif;background:linear-gradient(180deg,#fff 0%,#fff8f0 100%);margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+    .wrap{width:100%;max-width:540px}
+    .card{background:var(--card);border-radius:16px;padding:28px;box-shadow:0 6px 24px rgba(0,0,0,0.08);text-align:center}
+    h1{margin:0 0 8px;font-size:20px}
+    p.lead{margin:0 0 18px;color:var(--muted)}
+    .result{margin:18px auto 12px;padding:20px;border-radius:12px;border:1px dashed #eee;min-height:110px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+    .big{font-size:28px;font-weight:700}
+    .small{font-size:13px;color:var(--muted);margin-top:6px}
+    .btn{display:inline-block;margin:12px 6px;padding:12px 20px;border-radius:10px;border:0;background:linear-gradient(90deg,#ff9a9e,#fecfef);color:#fff;font-weight:700;cursor:pointer;box-shadow:0 6px 12px rgba(255,105,135,0.18)}
+    .btn.secondary{background:linear-gradient(90deg,#a1c4fd,#c2e9fb);color:#083;box-shadow:0 6px 12px rgba(66,165,245,0.12)}
+    .history{margin-top:16px;text-align:left}
+    .history h3{font-size:14px;margin:0 0 8px}
+    .history ul{padding-left:16px;margin:0}
+    .chip{display:inline-block;padding:6px 10px;border-radius:999px;background:#f6f6f6;margin:4px 4px 0;font-size:13px}
+    /* confetti canvas */
+    #confetti{position:fixed;left:0;top:0;pointer-events:none;width:100%;height:100%;z-index:999}
+    footer{font-size:12px;color:var(--muted);margin-top:12px}
+  </style>
+</head>
+<body>
+  <canvas id="confetti"></canvas>
+  <div class="wrap">
+    <div class="card">
+      <h1>おみくじアプリ</h1>
+      <p class="lead">ボタンを押して今日の運勢を引いてください。大吉が出ますように！</p>
+
+      <div class="result" id="result">
+        <div class="big" id="fortuneText">ボタンを押しておみくじを引こう</div>
+        <div class="small" id="fortuneDesc">あなたの今日の運勢がここに表示されます。</div>
+      </div>
+
+      <div>
+        <button class="btn" id="drawBtn">おみくじを引く</button>
+        <button class="btn secondary" id="resetBtn">履歴をクリア</button>
+      </div>
+
+      <div class="history" id="historyWrap">
+        <h3>履歴</h3>
+        <div id="chips" aria-live="polite"></div>
+      </div>
+
+      <footer>※結果はエンタメ目的です。良い一日を！</footer>
+    </div>
+  </div>
+
+  <script>
+    // おみくじデータ（weightで出やすさを調整）
+    const OMKUJI = [
+      {key:'大吉', desc:'最高の運勢！今日は何をやってもうまくいきます。', color:'#FF6B6B', weight:6, emoji:'🎉'},
+      {key:'中吉', desc:'良いことが起きやすい日。小さなチャンスを拾おう。', color:'#FF9F43', weight:12, emoji:'🙂'},
+      {key:'小吉', desc:'ほどほどに良い日。気持ちを穏やかに。', color:'#FFD166', weight:18, emoji:'😌'},
+      {key:'吉', desc:'まずまずの運勢。無理は禁物。', color:'#4D96FF', weight:24, emoji:'😄'},
+      {key:'末吉', desc:'あとから良くなる予感。焦らず。', color:'#7F8C8D', weight:20, emoji:'🤞'},
+      {key:'凶', desc:'慎重に。落ち着いて対処すれば回避できることが多いです。', color:'#95A5A6', weight:14, emoji:'😟'},
+      {key:'大凶', desc:'気を引き締めて。周囲の助けを借りると好転します。', color:'#34495E', weight:6, emoji:'⚠️'}
+    ];
+
+    // 重み付き抽選
+    function weightedPick(list){
+      const total = list.reduce((s,i)=>s+i.weight,0);
+      let r = Math.random()*total;
+      for(const item of list){
+        if(r < item.weight) return item;
+        r -= item.weight;
+      }
+      return list[list.length-1];
+    }
+
+    const drawBtn = document.getElementById('drawBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const fortuneText = document.getElementById('fortuneText');
+    const fortuneDesc = document.getElementById('fortuneDesc');
+    const chips = document.getElementById('chips');
+
+    // 履歴はセッション内の配列
+    let history = [];
+
+    function renderHistory(){
+      chips.innerHTML = '';
+      if(history.length === 0){
+        chips.innerHTML = '<div class="small">まだおみくじを引いていません。</div>';
+        return;
+      }
+      history.slice().reverse().forEach(h => {
+        const el = document.createElement('span');
+        el.className = 'chip';
+        el.textContent = `${h.time} — ${h.key}`;
+        chips.appendChild(el);
+      });
+    }
+
+    function drawOmikuji(){
+      // ボタンの連打防止
+      drawBtn.disabled = true;
+      drawBtn.textContent = 'ひいています...';
+
+      // アニメっぽくランダム表示
+      const shuffleCount = 8;
+      let i = 0;
+      const interval = setInterval(()=>{
+        const sample = OMKUJI[Math.floor(Math.random()*OMKUJI.length)];
+        fortuneText.textContent = sample.emoji + ' ' + sample.key;
+        fortuneDesc.textContent = sample.desc;
+        i++;
+        if(i>=shuffleCount){
+          clearInterval(interval);
+          const result = weightedPick(OMKUJI);
+          showResult(result);
+          drawBtn.disabled = false;
+          drawBtn.textContent = 'もう一度引く';
+        }
+      },120);
+    }
+
+    function showResult(item){
+      fortuneText.textContent = `${item.emoji} ${item.key}`;
+      fortuneDesc.textContent = item.desc;
+      fortuneText.style.color = item.color;
+
+      const now = new Date();
+      const timeStr = now.toLocaleString();
+      history.push({key:item.key, desc:item.desc, time:timeStr});
+      renderHistory();
+
+      if(item.key === '大吉' || item.key === '中吉'){
+        runConfetti();
+      }
+    }
+
+    drawBtn.addEventListener('click', drawOmikuji);
+    resetBtn.addEventListener('click',()=>{
+      if(!confirm('履歴を消しますか？')) return;
+      history = [];
+      renderHistory();
+      fortuneText.textContent = 'おみくじを引いてください';
+      fortuneDesc.textContent = 'あなたの今日の運勢がここに表示されます。';
+      fortuneText.style.color = '';
+    });
+
+    renderHistory();
+
+    // シンプルなキャンバスコンフェッティ（外部ライブラリ不要）
+    const confettiCanvas = document.getElementById('confetti');
+    const ctx = confettiCanvas.getContext && confettiCanvas.getContext('2d');
+    let confettiParticles = [];
+
+    function resizeCanvas(){
+      confettiCanvas.width = window.innerWidth;
+      confettiCanvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    function spawnConfetti(count=80){
+      confettiParticles = [];
+      for(let i=0;i<count;i++){
+        confettiParticles.push({
+          x: Math.random()*confettiCanvas.width,
+          y: -Math.random()*confettiCanvas.height*0.2,
+          r: Math.random()*6+4,
+          dx: Math.random()*6-3,
+          dy: Math.random()*3+2,
+          rot: Math.random()*360,
+          dr: Math.random()*6-3,
+          color: `hsl(${Math.floor(Math.random()*360)},70%,60%)`
+        });
+      }
+      requestAnimationFrame(animateConfetti);
+    }
+
+    function animateConfetti(){
+      if(!ctx) return;
+      ctx.clearRect(0,0,confettiCanvas.width,confettiCanvas.height);
+      for(const p of confettiParticles){
+        p.x += p.dx; p.y += p.dy; p.rot += p.dr; p.dy += 0.05;
+        ctx.save();
+        ctx.translate(p.x,p.y);
+        ctx.rotate(p.rot*Math.PI/180);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.r/2,-p.r/2,p.r, p.r*0.6);
+        ctx.restore();
+      }
+      confettiParticles = confettiParticles.filter(p => p.y < confettiCanvas.height + 50);
+      if(confettiParticles.length > 0) requestAnimationFrame(animateConfetti);
+    }
+
+    function runConfetti(){
+      spawnConfetti(80);
+    }
+  </script>
+</body>
+</html>
